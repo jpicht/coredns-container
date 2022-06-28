@@ -52,6 +52,8 @@ type worker struct {
 	requests chan workItem
 
 	containers []dockerapi.APIContainers
+
+	config
 }
 
 func (c *Container) start() {
@@ -65,6 +67,8 @@ func (c *Container) start() {
 			make(chan workItem),
 
 			nil,
+
+			c.config,
 		}
 		go w.connectLoop()
 		c.workers = append(c.workers, w.requests)
@@ -96,8 +100,13 @@ func (w *worker) connectLoop() {
 }
 
 func (w *worker) clientWorker() {
-	refresh := time.NewTicker(5 * time.Second)
+	refresh := time.NewTicker(w.config.cacheTime)
 	defer refresh.Stop()
+
+	events := make(chan *dockerapi.APIEvents)
+	defer close(events)
+
+	w.client.AddEventListener(events)
 
 	for {
 		select {
@@ -110,6 +119,9 @@ func (w *worker) clientWorker() {
 				return
 			}
 			w.handleRequest(r, w.containers)
+		case e := <-events:
+			log.Debugf("event: %s -> %s (%s)", e.Action, e.Actor.Attributes["name"], e.ID[0:12])
+			w.containers = nil
 		case <-w.stop.Done():
 			return
 		}
@@ -118,15 +130,9 @@ func (w *worker) clientWorker() {
 
 func (w *worker) refresh() bool {
 	log.Debugf("worker: refresh '%s'", w.socket)
-	containers, err := w.client.ListContainers(dockerapi.ListContainersOptions{All: true})
+	containers, err := w.client.ListContainers(dockerapi.ListContainersOptions{})
 	if err == nil {
-		for _, c := range containers {
-			if c.State != "running" {
-				log.Debugf("worker: skipping container %s: State=%v Status=%v", c.Names[0][1:], c.State, c.Status)
-				continue
-			}
-			w.containers = append(w.containers, c)
-		}
+		w.containers = containers
 		return true
 	}
 

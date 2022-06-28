@@ -18,21 +18,25 @@ type Container struct {
 	stop   context.Context
 	cancel context.CancelFunc
 
-	Next    plugin.Handler
-	sockets []string
-	domains []string
+	Next plugin.Handler
+	config
 
 	workers []chan<- workItem
 }
 
-func New(next plugin.Handler, sockets []string, domains []string) *Container {
+type config struct {
+	sockets   []string
+	domains   []string
+	cacheTime time.Duration
+}
+
+func New(next plugin.Handler, config config) *Container {
 	stop, cancel := context.WithCancel(context.Background())
 	c := &Container{
-		stop:    stop,
-		cancel:  cancel,
-		Next:    next,
-		sockets: sockets,
-		domains: domains,
+		stop:   stop,
+		cancel: cancel,
+		Next:   next,
+		config: config,
 	}
 	c.start()
 	return c
