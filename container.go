@@ -2,11 +2,16 @@ package corednscontainer
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	clog "github.com/coredns/coredns/plugin/pkg/log"
+	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
 )
+
+var log = clog.NewWithPlugin("container")
 
 type Container struct {
 	stop   context.Context
@@ -31,8 +36,8 @@ func New(next plugin.Handler, sockets []string) *Container {
 }
 
 func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
-
-	answers := make(chan answer)
+	log.Debug("query")
+	state := request.Request{Req: r, W: w}
 
 	var (
 		subCtx context.Context
@@ -42,13 +47,25 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	if deadline, ok := ctx.Deadline(); ok {
 		subCtx, cancel = context.WithTimeout(ctx, time.Until(deadline)*time.Duration(9)/time.Duration(10))
 	} else {
-		subCtx, cancel = context.WithCancel(ctx)
+		subCtx, cancel = context.WithTimeout(ctx, time.Second)
 	}
 	defer cancel()
+
+	log.Debug("-> worker")
+
+	answers := make(chan answer)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(c.workers))
+	go func() {
+		wg.Wait()
+		close(answers)
+	}()
 
 	for _, w := range c.workers {
 		workerAnswers := make(chan answer)
 		go func() {
+			defer wg.Done()
 			for {
 				select {
 				case answer, ok := <-workerAnswers:
@@ -61,7 +78,7 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 				}
 			}
 		}()
-		w <- workItem{subCtx, r, workerAnswers}
+		w <- workItem{subCtx, &state, workerAnswers}
 	}
 
 	m := new(dns.Msg)
@@ -71,17 +88,22 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 	var found bool
 
+	log.Debug("<- answers")
+
 	for rr := range answers {
 		found = true
-		m.Answer = append(m.Answer, rr)
+		m.Answer = append(m.Answer, rr.RR)
 	}
+
+	log.Debug("-> response")
 
 	if found {
-		w.WriteMsg(m)
-		return dns.RcodeSuccess, nil
+		log.Debugf("sending %d records", len(m.Answer))
+	} else {
+		log.Debug("not found")
 	}
-
-	return c.Next.ServeDNS(ctx, w, r)
+	w.WriteMsg(m)
+	return dns.RcodeSuccess, nil
 }
 
 func (*Container) Name() string {

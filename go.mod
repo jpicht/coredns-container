@@ -1,6 +1,6 @@
 module github.com/jpicht/coredns-container
 
-go 1.18
+go 1.17
 
 require (
 	github.com/coredns/caddy v1.1.1
