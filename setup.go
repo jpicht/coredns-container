@@ -1,6 +1,8 @@
 package corednscontainer
 
 import (
+	"strings"
+
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
@@ -16,8 +18,23 @@ func setup(c *caddy.Controller) error {
 		return c.ArgErr()
 	}
 
+	domains := []string{}
+	if c.NextBlock() {
+		key := c.Val()
+		switch key {
+		case "domain":
+			for c.NextArg() {
+				domain := c.Val()
+				if !strings.HasSuffix(domain, ".") {
+					domain += "."
+				}
+				domains = append(domains, domain)
+			}
+		}
+	}
+
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return New(next, sockets)
+		return New(next, sockets, domains)
 	})
 
 	return nil

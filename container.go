@@ -2,6 +2,7 @@ package corednscontainer
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,18 +19,20 @@ type Container struct {
 	cancel context.CancelFunc
 
 	Next    plugin.Handler
-	Sockets []string
+	sockets []string
+	domains []string
 
 	workers []chan<- workItem
 }
 
-func New(next plugin.Handler, sockets []string) *Container {
+func New(next plugin.Handler, sockets []string, domains []string) *Container {
 	stop, cancel := context.WithCancel(context.Background())
 	c := &Container{
 		stop:    stop,
 		cancel:  cancel,
 		Next:    next,
-		Sockets: sockets,
+		sockets: sockets,
+		domains: domains,
 	}
 	c.start()
 	return c
@@ -38,7 +41,31 @@ func New(next plugin.Handler, sockets []string) *Container {
 func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	log.Debug("query")
 	state := request.Request{Req: r, W: w}
+	var ok = len(c.domains) == 0
+	if len(c.domains) > 0 {
+		name := state.Name()
+		for _, domain := range c.domains {
+			if strings.HasSuffix(name, domain) {
+				ok = true
+			}
+		}
+	}
 
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative, m.RecursionAvailable, m.Compress = true, true, true
+	if ok {
+		m.Answer = c.get(ctx, state)
+	}
+
+	log.Debug("-> response")
+	log.Debugf("sending %d records", len(m.Answer))
+
+	w.WriteMsg(m)
+	return dns.RcodeSuccess, nil
+}
+
+func (c *Container) get(ctx context.Context, state request.Request) []dns.RR {
 	var (
 		subCtx context.Context
 		cancel context.CancelFunc
@@ -78,32 +105,17 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 				}
 			}
 		}()
-		w <- workItem{subCtx, &state, workerAnswers}
+		w <- newWorkItem(subCtx, &state, c.domains, workerAnswers)
 	}
-
-	m := new(dns.Msg)
-	m.SetReply(r)
-	m.Authoritative, m.RecursionAvailable, m.Compress = true, true, true
-	m.Answer = []dns.RR{}
-
-	var found bool
 
 	log.Debug("<- answers")
 
+	resultSet := []dns.RR{}
 	for rr := range answers {
-		found = true
-		m.Answer = append(m.Answer, rr.RR)
+		resultSet = append(resultSet, rr)
 	}
 
-	log.Debug("-> response")
-
-	if found {
-		log.Debugf("sending %d records", len(m.Answer))
-	} else {
-		log.Debug("not found")
-	}
-	w.WriteMsg(m)
-	return dns.RcodeSuccess, nil
+	return resultSet
 }
 
 func (*Container) Name() string {

@@ -14,13 +14,34 @@ import (
 
 type workItem struct {
 	ctx    context.Context
-	state  *request.Request
+	base   string
+	full   string
+	qtype  uint16
 	answer chan<- answer
 }
 type answer struct {
 	network string
 	isV4    bool
 	dns.RR
+}
+
+func newWorkItem(ctx context.Context, state *request.Request, domains []string, answer chan<- answer) workItem {
+	w := workItem{
+		ctx:    ctx,
+		full:   state.Name(),
+		qtype:  state.QType(),
+		answer: answer,
+	}
+
+	if len(domains) == 0 {
+		w.base, _, _ = strings.Cut(w.full, ".")
+	} else {
+		w.base = strings.TrimRight(w.full, ".")
+	}
+
+	log.Debugf("w: %#v", w)
+
+	return w
 }
 
 type worker struct {
@@ -34,8 +55,8 @@ type worker struct {
 }
 
 func (c *Container) start() {
-	log.Infof("start (%d sockets)", len(c.Sockets))
-	for _, socket := range c.Sockets {
+	log.Infof("start (%d sockets, %d domains)", len(c.sockets), len(c.domains))
+	for _, socket := range c.sockets {
 		w := &worker{
 			c.stop,
 			socket,
@@ -69,6 +90,7 @@ func (w *worker) connectLoop() {
 		// reset backoff
 		w.backoff = time.Second
 
+		// will return on error, then we'll reconnect
 		w.clientWorker()
 	}
 }
@@ -82,7 +104,7 @@ func (w *worker) clientWorker() {
 		case <-refresh.C:
 			w.containers = nil
 		case r := <-w.requests:
-			log.Debugf("worker: request: %v", r.state.Name())
+			log.Debugf("worker: request: %v", r.full)
 			if w.containers == nil && !w.refresh() {
 				close(r.answer)
 				return
@@ -113,24 +135,25 @@ func (w *worker) refresh() bool {
 }
 
 func (w *worker) handleRequest(r workItem, containers []dockerapi.APIContainers) {
-	defer log.Debugf("worker: end request: %v", r.state.Name())
+	defer log.Debugf("worker: end request: %v", r.full)
 	defer close(r.answer)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(len(containers))
 
-	fullName := r.state.Name()
-	qName, _, _ := strings.Cut(fullName, ".")
 	for _, c := range containers {
 		go func(c dockerapi.APIContainers) {
-			log.Debugf("worker: inspecting %v", c.Names)
-
 			defer wg.Done()
+
 			for _, name := range c.Names {
-				name = strings.TrimLeft(name, "/")
-				if qName == name {
+				name := strings.TrimRight(name[1:], ".")
+
+				log.Debugf("worker: inspecting %v", name)
+
+				log.Debugf("name: %s", name)
+				if r.base == name {
 					log.Debugf("worker: found %s", name)
-					pushIPs(fullName, r.state.QType(), c, r.answer)
+					pushIPs(r.full, r.qtype, c, r.answer)
 					return
 				}
 			}
@@ -142,7 +165,8 @@ func (w *worker) handleRequest(r workItem, containers []dockerapi.APIContainers)
 
 func pushIPs(name string, qtype uint16, c dockerapi.APIContainers, output chan<- answer) {
 	for netName, network := range c.Networks.Networks {
-		log.Debugf("worker: %v.%s: %v", c.Names, netName, []string{network.IPAddress, network.GlobalIPv6Address})
+		log.Debugf("worker: %s.%s: v4=%v v6=%v", c.Names[0][1:], netName, network.IPAddress, network.GlobalIPv6Address)
+
 		if qtype == dns.TypeA {
 			pushA(name, netName, c, output, net.ParseIP(network.IPAddress))
 		} else {
