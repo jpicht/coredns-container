@@ -120,7 +120,15 @@ func (w *worker) clientWorker() {
 			}
 			w.handleRequest(r, w.containers)
 		case e := <-events:
-			log.Debugf("event: %s -> %s (%s)", e.Action, e.Actor.Attributes["name"], e.ID[0:12])
+			if e == nil {
+				log.Warning("nil event")
+				continue
+			}
+			if name, ok := e.Actor.Attributes["name"]; ok {
+				log.Debugf("event: %s -> %s (%s)", e.Action, name, e.ID[0:12])
+			} else {
+				log.Debugf("event: %s -> %v (%s)", e.Action, e.Actor, e.ID[0:12])
+			}
 			w.containers = nil
 		case <-w.stop.Done():
 			return
