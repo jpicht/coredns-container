@@ -66,13 +66,13 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 	log.Debug("-> response")
 
-	if ok || !c.fall.Through(state.Name()) {
-		log.Debugf("sending %d records", len(m.Answer))
-		w.WriteMsg(m)
-		return dns.RcodeSuccess, nil
+	if len(m.Answer) == 0 && c.fall.Through(state.Name()) {
+		return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, r)
 	}
 
-	return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, r)
+	log.Debugf("sending %d records", len(m.Answer))
+	w.WriteMsg(m)
+	return dns.RcodeSuccess, nil
 }
 
 func (c *Container) get(ctx context.Context, state request.Request) []dns.RR {

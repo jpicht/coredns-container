@@ -26,25 +26,32 @@ func setup(c *caddy.Controller) error {
 	}
 
 	if c.NextBlock() {
-		key := c.Val()
-		switch key {
-		case "domain":
-			for c.NextArg() {
-				domain := c.Val()
-				if !strings.HasSuffix(domain, ".") {
-					domain += "."
+		for {
+			key := c.Val()
+			switch key {
+			case "domain":
+				for c.NextArg() {
+					domain := c.Val()
+					if !strings.HasSuffix(domain, ".") {
+						domain += "."
+					}
+					config.domains = append(config.domains, domain)
 				}
-				config.domains = append(config.domains, domain)
+			case "cache":
+				if !c.NextArg() {
+					return c.ArgErr()
+				}
+				cacheTime_, err := time.ParseDuration(c.Val())
+				if err != nil {
+					return c.Errf("'%s' is not a valid duration: %w", c.Val, err)
+				}
+				config.cacheTime = cacheTime_
+			case "fallthrough":
+				config.fall.SetZonesFromArgs(c.RemainingArgs())
 			}
-		case "cache":
-			if !c.NextArg() {
-				return c.ArgErr()
+			if !c.NextLine() {
+				break
 			}
-			cacheTime_, err := time.ParseDuration(c.Val())
-			if err != nil {
-				return c.Errf("'%s' is not a valid duration: %w", c.Val, err)
-			}
-			config.cacheTime = cacheTime_
 		}
 	}
 
