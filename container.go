@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/pkg/fall"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
@@ -28,6 +29,7 @@ type config struct {
 	sockets   []string
 	domains   []string
 	cacheTime time.Duration
+	fall      fall.F
 }
 
 func New(next plugin.Handler, config config) *Container {
@@ -63,10 +65,14 @@ func (c *Container) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	}
 
 	log.Debug("-> response")
-	log.Debugf("sending %d records", len(m.Answer))
 
-	w.WriteMsg(m)
-	return dns.RcodeSuccess, nil
+	if ok || !c.fall.Through(state.Name()) {
+		log.Debugf("sending %d records", len(m.Answer))
+		w.WriteMsg(m)
+		return dns.RcodeSuccess, nil
+	}
+
+	return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, r)
 }
 
 func (c *Container) get(ctx context.Context, state request.Request) []dns.RR {
